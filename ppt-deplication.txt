@@ -1,0 +1,139 @@
+# PPT Deduplication
+
+pip install transformers sentence-transformers pytesseract opencv-python-headless scikit-image torch torchvision
+
+import pandas as pd
+from transformers import CLIPProcessor, CLIPModel
+from sentence_transformers import SentenceTransformer, util
+from PIL import Image
+import torch
+import pytesseract
+import cv2
+from skimage.metrics import structural_similarity as ssim
+from itertools import combinations
+
+# Load Models
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+text_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+# --- Functions ---
+def extract_text(image_path):
+    image = Image.open(image_path)
+    return pytesseract.image_to_string(image)
+
+def get_image_embedding(image_path):
+    image = Image.open(image_path).convert("RGB")
+    inputs = clip_processor(images=image, return_tensors="pt")
+    with torch.no_grad():
+        features = clip_model.get_image_features(**inputs)
+    return features / features.norm(p=2, dim=-1, keepdim=True)
+
+def compute_ssim(image_path1, image_path2):
+    img1 = cv2.imread(image_path1, cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.imread(image_path2, cv2.IMREAD_GRAYSCALE)
+    img1 = cv2.resize(img1, (min(img1.shape[1], img2.shape[1]), min(img1.shape[0], img2.shape[0])))
+    img2 = cv2.resize(img2, (img1.shape[1], img1.shape[0]))
+    score, _ = ssim(img1, img2, full=True)
+    return score
+
+def compute_text_similarity(text1, text2):
+    emb1 = text_model.encode(text1, convert_to_tensor=True)
+    emb2 = text_model.encode(text2, convert_to_tensor=True)
+    return util.pytorch_cos_sim(emb1, emb2).item()
+	
+import os
+# --- Compare each image vs every other image ---
+#folder_path = "/Workspace/Users/puneeth.raviprakash@accenture.com/Identify_ppt_duplicacy /ME_Report_ppt/ME_Report_Images"
+folder_path = "/Workspace/Users/puneeth.raviprakash@accenture.com/Identify_ppt_duplicacy /ME_Report_ppt/ME_Report_Images_107_Slides"
+image_files = sorted([f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+image_paths = [os.path.join(folder_path, f) for f in image_files]
+
+# --- Step 1: Extract and Save OCR Text for Each Image ---
+print("🔄 Extracting OCR text and image embeddings...")
+ocr_texts = {}
+embeddings = {}
+
+ocr_data = []  # For Excel export
+
+for img_path, img_file in zip(image_paths, image_files):
+    text = extract_text(img_path)
+    emb = get_image_embedding(img_path)
+    ocr_texts[img_path] = text
+    embeddings[img_path] = emb
+    ocr_data.append({'Slide': img_file, 'Extracted Text': text.strip()})
+
+ocr_df = pd.DataFrame(ocr_data)
+#ocr_df.to_excel("OCR_Text_Results.xlsx", index=False)
+ocr_df.head()
+print("✅ OCR text saved to OCR_Text_Results.xlsx")
+
+# --- Step 2: Compare Each Slide vs Others and Save to Excel ---
+print("\n🔍 Performing pairwise comparisons...")
+results = []
+
+for i in range(len(image_paths)):
+    img1 = image_paths[i]
+    for j in range(i + 1, len(image_paths)):
+        img2 = image_paths[j]
+
+        try:
+            clip_sim = torch.nn.functional.cosine_similarity(embeddings[img1], embeddings[img2]).item()
+            ssim_val = compute_ssim(img1, img2)
+            text_sim = compute_text_similarity(ocr_texts[img1], ocr_texts[img2])
+            final_score = round((clip_sim + ssim_val + text_sim) / 3, 4)
+
+            results.append({
+                'Slide A': os.path.basename(img1),
+                'Slide B': os.path.basename(img2),
+              # 'CLIP Image Similarity': round(clip_sim, 4),
+                'SSIM Score': round(ssim_val, 4),
+               # 'OCR Text Similarity': round(text_sim, 4),
+                'Final Score': final_score
+            })#
+
+        except Exception as e:
+            print(f"❌ Error comparing {img1} vs {img2}: {e}")
+			
+			
+# Save to Excel
+df_results = pd.DataFrame(results)
+display(df_results)
+print("✅ Pairwise comparison saved to Slide_Similarity_Results.xlsx")
+
+
+pip install openpyxl
+
+df_results.to_excel("Slide_Similarity_Results.xlsx", index=False)
+
+# CLIP
+
+#LIP (Contrastive Language–Image Pretraining) is a model developed by OpenAI that understands images and text together. It can compute how well an image matches a piece of text — or #how similar two images are, even if they’re visually different but semantically the same.
+
+#emantic and visual deduplication
+#Understands layout + semantics: Even if a pie chart is in a different color or font, CLIP may still recognize it.
+
+
+#How CLIP Works Step-by-Step: Image Encoder (ResNet or Vision Transformer) turns an image into a high-dimensional vector.
+
+#Text Encoder (Transformer) turns text into a vector. During training, CLIP learns to align images with their correct captions and push unrelated pairs apart using a contrastive #loss.
+
+#Once trained: Two similar images → vectors close together. Two dissimilar images → vectors far apart.
+
+#0.9 to 1 - highly similar, 0.8 to 0.9 - Strong similarity, 0.70 to 0.79 - Moderate similarity, 0.60 to 0.69 - Weak similarity, <0.6 - Different content/layout/data
+
+#SSIM ((Structural Similarity Index Measure))
+
+#SSIM (Structural Similarity Index Measure) is a method to measure how visually similar two images are, focusing on structure, contrast, and luminanc#e, which better reflects human #perception than raw pixel comparison.
+
+#How SSIM Works (in simple terms): Divides both images into small patches (e.g., 11×11).
+
+#For each patch, it compares:
+
+#Luminance (brightness),Contrast (variance), Structure (correlation)
+
+#Combines these into a similarity score between 0 (different) and 1 (identical) using a formula: Averages all patch scores to get the final SSIM.
+
+#✅ In Practice: SSIM ≈ 0.9–1.0 → Very similar images SSIM ≈ 0.5–0.8 → Some differences (layout, compression, charts) SSIM < 0.5 → Visually different##
+
+
