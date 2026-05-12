@@ -1,0 +1,128 @@
+# 1) Generated KeyThemes using Client Name, Section Label, Questions and QuestionComments
+
+
+# Installing Required Libraries.
+%pip install openai==1.25.2
+#dbutils.library.restartPython()
+
+!pip install langdetect
+
+spark.conf.set("spark.sql.execution.arrow.pyspark.enabled", "false")
+
+pip install openpyxl
+
+dbutils.library.restartPython()
+
+import pandas as pd
+#data = pd.read_excel("/dbfs/FileStore/FY25_AP_Vision_4questions.xlsx")
+
+df = pd.read_excel("/Workspace/Users/puneeth.raviprakash@accenture.com/Sales_Excellence_Chandra's_POC/FY25_AP_Strategy_12questions.xlsx")
+#data.head()
+df.head()
+
+# Select required columns
+df_fil = df[['AccountNm','SectionLabelDesc','QuestionTxt', 'AnswerStatus','AnswerChoiceTxt','Score','QuestionComments']]
+df_fil.head()
+
+import re
+import pandas as pd
+from langdetect import DetectorFactory
+
+# Set the seed for reproducibility in language detection
+DetectorFactory.seed = 0
+
+# Create function to do data cleanup
+def text_cleaner(text):
+    # Ensure the text is a string
+    if not isinstance(text, str):
+        return ''
+    
+    # Lowercase the text
+    newString = text.lower()
+    
+    # Remove junk characters and non-alphabetic characters
+    newString = re.sub(r'[^a-zA-Z\s]', '', newString)
+    
+    # Remove extra spaces
+    newString = re.sub(r'\s+', ' ', newString).strip()
+    
+    # Tokenize the text
+    tokens = newString.split()
+    
+    # Optionally, remove short words
+    tokens = [word for word in tokens if len(word) > 2]
+    
+    # Rejoin tokens into a cleaned string
+    cleaned_text = ' '.join(tokens)
+    
+    return cleaned_text
+
+# Apply the text_cleaner function to the 'QuestionComments' column
+df_fil_upd1['Cleaned_QuestionComments'] = df_fil_upd1['QuestionComments'].apply(text_cleaner)
+
+
+from openai import AzureOpenAI
+import pandas as pd
+
+# Initialize the Azure OpenAI client
+client = AzureOpenAI(
+    api_key="72e3563c783541a09694ba2a016109bd",
+    api_version="2024-02-01",
+    azure_endpoint="https://cal-azureopenai-gpt4.openai.azure.com/"
+)
+
+# Define a function to extract themes and action items based on additional columns
+def extract_info(client_name, section_desc, question_txt, question_comments):
+    # Combine the information for better context
+    text = (f"Client Name: {client_name}\n"
+            f"Section Description: {section_desc}\n"
+            f"Question Text: {question_txt}\n"
+            f"Question Comments: {question_comments}")
+
+    # Use the gpt-4o model to generate themes and action items
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Assistant is a large language model trained by OpenAI."},
+            {"role": "user", 
+             "content": f"Please identify and list three key themes along with two actionable items for each theme based on the following client information:\n"
+                        f"{text}\n"
+                        "Write the response in 1-2 paragraphs. Remember: DO NOT INCLUDE ANY CITATIONS (such as [doc1],[doc2]) IN YOUR RESPONSE. "
+                        "Just print the information that you can gather. Print the information you can gather and infer in separate paragraphs Please do not again write the client name, section description, question text, question comments while generating the keythemes."
+                        "and make the answers point-wise. If the user requests information that is not in the data or from another source, strictly say ‘Data Unavailable’."}
+        ],
+        max_tokens=270,
+        temperature=0.7,
+    )
+
+    # Check if response is None
+    if response is None:
+        return pd.Series({'Themes': []})
+
+    # Extract themes and action items from the response
+    if response.choices and response.choices[0].message and response.choices[0].message.content:
+        themes = response.choices[0].message.content.strip().split("\n")
+    else:
+        themes = []
+
+    return pd.Series({'Themes': themes})
+
+# Apply the extract_info function to each row of the DataFrame
+df_fil_upd2[['Themes']] = df_fil_upd2.apply(
+    lambda row: extract_info(
+        row['AccountNm'], 
+        row['SectionLabelDesc'], 
+        row['QuestionTxt'], 
+        row['Cleaned_QuestionComments']
+    ) if row['Cleaned_QuestionComments'] is not None else pd.Series({'Themes': []}),
+    axis=1
+)
+
+
+
+import pandas as pd
+import re
+keythemes_13k_above_4features = pd.read_csv("/Workspace/Users/puneeth.raviprakash@accenture.com/Sales_Excellence_Chandra's_POC/df_fil_upd_13k_above_4features.csv")
+keythemes_13k_above_4features.head()
+
+
